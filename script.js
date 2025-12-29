@@ -15,26 +15,17 @@ let currentUser = {
 };
 
 // Game State
-let currentPlayer = {
-    id: null,
-    name: '',
-    isCreator: false,
-    score: 0,
-    roomCode: '',
-    selectedCategory: 'umum'
-};
-
 let gameState = {
     currentScreen: 'auth',
     currentQuestionIndex: 0,
     timer: window.firebaseConfig.GAME_CONFIG.QUESTION_TIME,
     timerInterval: null,
     hasAnswered: false,
+    allPlayersAnswered: false,
     roomQuestions: [],
-    lastQuestionIndex: -1,
     categories: [],
-    roomPlayers: [],
-    gameStarted: false
+    gameStarted: false,
+    playersAnswered: new Set()
 };
 
 // Room State
@@ -43,14 +34,16 @@ let roomState = {
     players: {},
     gameStarted: false,
     currentQuestion: 0,
-    status: 'waiting'
+    status: 'waiting',
+    answers: {}
 };
 
 // UI State
 let uiState = {
     isSoundEnabled: true,
     isVoiceChatEnabled: false,
-    activeRoomType: null
+    activeRoomType: null,
+    autoNextQuestion: false
 };
 
 // DOM Elements Cache
@@ -224,7 +217,7 @@ function setupEventListeners() {
         if (e.key === 'Enter') register();
     });
 
-    // Auto-focus player name in lobby
+    // Auto-fill player name in lobby
     domElements.lobby.playerName?.addEventListener('focus', function() {
         if (!this.value && currentUser.username) {
             this.value = currentUser.username;
@@ -498,7 +491,7 @@ function loginAsGuest() {
 // Logout function
 function logout() {
     // Leave room if in one
-    if (currentPlayer.roomCode) {
+    if (roomState.code) {
         leaveRoom();
     }
     
@@ -519,14 +512,18 @@ function logout() {
         createdAt: null
     };
     
-    currentPlayer = {
-        id: null,
-        name: '',
-        isCreator: false,
-        score: 0,
-        roomCode: '',
-        selectedCategory: 'umum'
+    roomState = {
+        code: '',
+        players: {},
+        gameStarted: false,
+        currentQuestion: 0,
+        status: 'waiting',
+        answers: {}
     };
+    
+    gameState.playersAnswered.clear();
+    gameState.hasAnswered = false;
+    gameState.allPlayersAnswered = false;
     
     localStorage.removeItem('tebakmulti_user');
     showScreen('auth');
@@ -546,8 +543,8 @@ function updateUserUI() {
     const roleText = getRoleDisplay(currentUser.role);
     domElements.user.role.innerHTML = roleText;
     
-    // Update player name in lobby
-    if (domElements.lobby.playerName) {
+    // Auto-fill player name in lobby if empty
+    if (domElements.lobby.playerName && !domElements.lobby.playerName.value) {
         domElements.lobby.playerName.value = currentUser.username;
     }
     
@@ -725,7 +722,6 @@ function updateCategoryDisplay() {
             });
             
             categoryItem.classList.add('selected');
-            currentPlayer.selectedCategory = category.id;
         });
         
         domElements.lobby.categoryGrid.appendChild(categoryItem);
@@ -733,7 +729,6 @@ function updateCategoryDisplay() {
     
     if (gameState.categories.length > 0) {
         domElements.lobby.categoryGrid.querySelector('.category-item-lobby').classList.add('selected');
-        currentPlayer.selectedCategory = gameState.categories[0].id;
     }
 }
 
@@ -759,12 +754,14 @@ function updateCategoryList() {
                 </div>
             </div>
             <div class="category-actions">
+                ${(currentUser.role === 'admin' || currentUser.role === 'developer') ? `
                 <button class="btn-category-action edit" onclick="editCategory('${category.id}')">
                     <i class="fas fa-edit"></i>
                 </button>
                 <button class="btn-category-action" onclick="deleteCategory('${category.id}')">
                     <i class="fas fa-trash"></i>
                 </button>
+                ` : ''}
             </div>
         `;
         
@@ -777,14 +774,22 @@ function updateCategoryAccessInfo() {
     if (!domElements.categoryManagement.categoryAccessInfo) return;
     
     if (currentUser.role === 'admin' || currentUser.role === 'developer') {
-        domElements.categoryManagement.categoryAccessInfo.innerHTML = '<i class="fas fa-edit"></i> Anda dapat mengedit dan menghapus kategori';
+        domElements.categoryManagement.categoryAccessInfo.innerHTML = 
+            '<i class="fas fa-edit"></i> Anda dapat mengedit dan menghapus kategori';
     } else {
-        domElements.categoryManagement.categoryAccessInfo.innerHTML = '<i class="fas fa-eye"></i> Hanya admin yang dapat mengedit kategori';
+        domElements.categoryManagement.categoryAccessInfo.innerHTML = 
+            '<i class="fas fa-eye"></i> Hanya admin yang dapat mengedit kategori';
     }
 }
 
 // Add new category
 async function addNewCategory() {
+    // Check role permission
+    if (currentUser.role !== 'admin' && currentUser.role !== 'developer') {
+        showToast('Hanya admin yang dapat menambah kategori!');
+        return;
+    }
+    
     const name = domElements.categoryManagement.newCategoryName.value.trim();
     const icon = domElements.categoryManagement.newCategoryIcon.value;
     
@@ -911,6 +916,12 @@ function updateQuestionCategorySelect() {
 
 // Add new question
 async function addNewQuestion() {
+    // Check role permission
+    if (currentUser.role !== 'admin' && currentUser.role !== 'developer') {
+        showToast('Hanya admin yang dapat menambah soal!');
+        return;
+    }
+    
     const questionText = domElements.questionManagement.questionTextInput.value.trim();
     const category = domElements.questionManagement.questionCategorySelect.value;
     const optionA = domElements.questionManagement.optionA.value.trim();
@@ -949,6 +960,9 @@ async function addNewQuestion() {
         // Save to Firebase
         await window.questionManager.saveUserQuestions();
         
+        // Update category question count
+        await updateCategoryQuestionCount(category);
+        
         // Update UI
         updateQuestionsList();
         updateGlobalStats();
@@ -965,6 +979,16 @@ async function addNewQuestion() {
     } catch (error) {
         console.error('Error adding question:', error);
         showToast('Gagal menambahkan soal');
+    }
+}
+
+// Update category question count
+async function updateCategoryQuestionCount(categoryId) {
+    try {
+        const count = window.questionManager.getQuestionCount(categoryId);
+        await window.firebaseConfig.database.ref(`categories/${categoryId}/questionCount`).set(count);
+    } catch (error) {
+        console.error('Error updating category question count:', error);
     }
 }
 
@@ -998,6 +1022,7 @@ function updateQuestionsList() {
                         Ditambahkan oleh: ${question.addedBy || 'Anonymous'}
                     </span>
                 </div>
+                ${(currentUser.role === 'admin' || currentUser.role === 'developer') ? `
                 <div class="question-actions">
                     <button class="btn-category-action edit" onclick="editQuestion('${question.id}')">
                         <i class="fas fa-edit"></i>
@@ -1006,6 +1031,7 @@ function updateQuestionsList() {
                         <i class="fas fa-trash"></i>
                     </button>
                 </div>
+                ` : ''}
             </div>
         `;
         domElements.questionManagement.questionsList.appendChild(questionItem);
@@ -1027,8 +1053,23 @@ async function deleteQuestion(questionId) {
     if (!confirm('Apakah Anda yakin ingin menghapus soal ini?')) return;
     
     try {
+        // Get category before deleting
+        let questionCategory = null;
+        for (const category in window.questionManager.userQuestions) {
+            const question = window.questionManager.userQuestions[category].find(q => q.id === questionId);
+            if (question) {
+                questionCategory = category;
+                break;
+            }
+        }
+        
         window.questionManager.deleteQuestion(questionId);
         await window.questionManager.saveUserQuestions();
+        
+        // Update category question count
+        if (questionCategory) {
+            await updateCategoryQuestionCount(questionCategory);
+        }
         
         updateQuestionsList();
         updateGlobalStats();
@@ -1043,7 +1084,7 @@ async function deleteQuestion(questionId) {
 
 // Edit question
 async function editQuestion(questionId) {
-    if (currentUser.role !== 'admin' && currentUser.role !== 'developer') {
+    if (currentUser.role !== 'admin' && currentUser.role === 'developer') {
         showToast('Hanya admin yang dapat mengedit soal!');
         return;
     }
@@ -1214,7 +1255,7 @@ function generateRoomCode() {
 
 // Create room
 async function createRoom() {
-    const playerName = domElements.lobby.playerName.value.trim();
+    const playerName = domElements.lobby.playerName.value.trim() || currentUser.username;
     let roomCode = domElements.lobby.roomCodeCreate.value.trim().toUpperCase();
     
     if (!playerName) {
@@ -1240,16 +1281,24 @@ async function createRoom() {
             return;
         }
         
+        // Get selected category
+        const selectedCategory = document.querySelector('.category-item-lobby.selected');
+        const categoryId = selectedCategory ? 
+            selectedCategory.querySelector('.category-name-lobby').textContent.toLowerCase().replace(/\s+/g, '-') : 
+            'umum';
+        
         // Create room
         const playerId = currentUser.id || 'guest_' + Date.now();
         const roomData = {
             code: roomCode,
             creatorId: playerId,
             creatorName: playerName,
-            category: currentPlayer.selectedCategory,
+            category: categoryId,
             players: {
                 [playerId]: {
                     name: playerName,
+                    userId: currentUser.id,
+                    username: currentUser.username,
                     score: 0,
                     isReady: true,
                     isCreator: true,
@@ -1259,21 +1308,17 @@ async function createRoom() {
             status: 'waiting',
             gameStarted: false,
             currentQuestion: 0,
+            currentAnswers: {},
             createdAt: firebase.database.ServerValue.TIMESTAMP,
             lastActivity: firebase.database.ServerValue.TIMESTAMP
         };
         
         await roomRef.set(roomData);
         
-        // Update current player state
-        currentPlayer = {
-            id: playerId,
-            name: playerName,
-            isCreator: true,
-            score: 0,
-            roomCode: roomCode,
-            selectedCategory: currentPlayer.selectedCategory
-        };
+        // Update room state
+        roomState.code = roomCode;
+        roomState.players = roomData.players;
+        roomState.status = 'waiting';
         
         // Setup room listener
         setupRoomListener(roomCode);
@@ -1297,7 +1342,7 @@ async function createRoom() {
 
 // Join room
 async function joinRoom() {
-    const playerName = domElements.lobby.playerName.value.trim();
+    const playerName = domElements.lobby.playerName.value.trim() || currentUser.username;
     const roomCode = domElements.lobby.roomCodeJoin.value.trim().toUpperCase();
     
     if (!playerName) {
@@ -1336,10 +1381,23 @@ async function joinRoom() {
             return;
         }
         
+        // Check if player already in room
+        const existingPlayer = Object.values(roomData.players || {}).find(
+            p => p.userId === currentUser.id || p.username === currentUser.username
+        );
+        
+        if (existingPlayer) {
+            showToast('Anda sudah berada di room ini!');
+            hideLoading();
+            return;
+        }
+        
         // Join room
         const playerId = currentUser.id || 'guest_' + Date.now();
         await roomRef.child('players/' + playerId).set({
             name: playerName,
+            userId: currentUser.id,
+            username: currentUser.username,
             score: 0,
             isReady: true,
             isCreator: false,
@@ -1349,15 +1407,21 @@ async function joinRoom() {
         // Update last activity
         await roomRef.child('lastActivity').set(firebase.database.ServerValue.TIMESTAMP);
         
-        // Update current player state
-        currentPlayer = {
-            id: playerId,
-            name: playerName,
-            isCreator: false,
-            score: 0,
-            roomCode: roomCode,
-            selectedCategory: roomData.category
+        // Update room state
+        roomState.code = roomCode;
+        roomState.players = {
+            ...roomData.players,
+            [playerId]: {
+                name: playerName,
+                userId: currentUser.id,
+                username: currentUser.username,
+                score: 0,
+                isReady: true,
+                isCreator: false,
+                role: currentUser.role
+            }
         };
+        roomState.status = 'waiting';
         
         // Setup room listener
         setupRoomListener(roomCode);
@@ -1424,8 +1488,13 @@ function updateWaitingRoom() {
     
     playerIds.forEach(playerId => {
         const player = players[playerId];
+        const isCurrentUser = player.userId === currentUser.id || 
+                             player.username === currentUser.username;
+        
         const playerElement = document.createElement('div');
         playerElement.className = 'leaderboard-item';
+        if (isCurrentUser) playerElement.classList.add('you');
+        
         playerElement.innerHTML = `
             <div class="player-info">
                 <div class="player-avatar">${player.name.charAt(0).toUpperCase()}</div>
@@ -1433,10 +1502,10 @@ function updateWaitingRoom() {
                     <div class="player-name">
                         ${player.name}
                         ${player.isCreator ? '<span class="player-you">Host</span>' : ''}
+                        ${isCurrentUser ? '<span class="player-you">Anda</span>' : ''}
                     </div>
                     <div class="player-stats">
                         <span class="role-badge role-${player.role || 'anggota'}">${player.role || 'anggota'}</span>
-                        ${playerId === currentPlayer.id ? '<span class="player-you">Anda</span>' : ''}
                     </div>
                 </div>
             </div>
@@ -1450,10 +1519,16 @@ function updateWaitingRoom() {
     
     // Show/hide start button for creator
     if (domElements.waiting.startGameBtn) {
-        if (currentPlayer.isCreator && playerIds.length >= 2) {
+        const currentPlayerId = currentUser.id || Object.keys(players).find(
+            id => players[id].username === currentUser.username
+        );
+        
+        const isCreator = currentPlayerId && players[currentPlayerId]?.isCreator;
+        
+        if (isCreator && playerIds.length >= 2) {
             domElements.waiting.startGameBtn.disabled = false;
             domElements.waiting.startGameBtn.innerHTML = '<i class="fas fa-play"></i> Mulai Game';
-        } else if (currentPlayer.isCreator) {
+        } else if (isCreator) {
             domElements.waiting.startGameBtn.disabled = true;
             domElements.waiting.startGameBtn.innerHTML = '<i class="fas fa-users"></i> Tunggu pemain lain...';
         } else {
@@ -1465,13 +1540,20 @@ function updateWaitingRoom() {
 
 // Start game
 async function startGame() {
-    if (!currentPlayer.isCreator) {
+    const players = roomState.players || {};
+    const playerIds = Object.keys(players);
+    
+    // Check if current user is creator
+    const currentPlayerId = currentUser.id || Object.keys(players).find(
+        id => players[id].username === currentUser.username
+    );
+    
+    if (!currentPlayerId || !players[currentPlayerId]?.isCreator) {
         showToast('Hanya host yang dapat memulai game!');
         return;
     }
     
-    const players = roomState.players || {};
-    if (Object.keys(players).length < 2) {
+    if (playerIds.length < 2) {
         showToast('Minimal 2 pemain untuk memulai game!');
         return;
     }
@@ -1483,12 +1565,13 @@ async function startGame() {
         await loadQuestionsForCategory(roomState.category);
         
         // Update room status
-        const roomRef = window.firebaseConfig.database.ref('rooms/' + currentPlayer.roomCode);
+        const roomRef = window.firebaseConfig.database.ref('rooms/' + roomState.code);
         await roomRef.update({
             gameStarted: true,
             currentQuestion: 0,
             status: 'playing',
-            startedAt: firebase.database.ServerValue.TIMESTAMP
+            startedAt: firebase.database.ServerValue.TIMESTAMP,
+            currentAnswers: {}
         });
         
         // Mute voice chat during game
@@ -1514,6 +1597,8 @@ function startGameFromRoom() {
     gameState.gameStarted = true;
     gameState.currentQuestionIndex = 0;
     gameState.hasAnswered = false;
+    gameState.allPlayersAnswered = false;
+    gameState.playersAnswered.clear();
     
     showScreen('game');
     loadQuestion(0);
@@ -1521,30 +1606,49 @@ function startGameFromRoom() {
 
 // Leave waiting room
 async function leaveWaitingRoom() {
-    if (!currentPlayer.roomCode) return;
+    if (!roomState.code) return;
     
     showLoading('Meninggalkan room...');
     
     try {
-        const roomRef = window.firebaseConfig.database.ref('rooms/' + currentPlayer.roomCode);
+        const roomRef = window.firebaseConfig.database.ref('rooms/' + roomState.code);
+        const players = roomState.players || {};
         
-        if (currentPlayer.isCreator) {
-            // Creator leaves - delete room
-            await roomRef.remove();
-            showToast('Room telah ditutup');
-        } else {
-            // Player leaves - remove from room
-            await roomRef.child('players/' + currentPlayer.id).remove();
-            showToast('Anda telah meninggalkan room');
+        // Find current player in room
+        const currentPlayerId = currentUser.id || Object.keys(players).find(
+            id => players[id].username === currentUser.username
+        );
+        
+        if (currentPlayerId) {
+            const isCreator = players[currentPlayerId]?.isCreator;
+            
+            if (isCreator) {
+                // Creator leaves - delete room
+                await roomRef.remove();
+                showToast('Room telah ditutup');
+            } else {
+                // Player leaves - remove from room
+                await roomRef.child('players/' + currentPlayerId).remove();
+                showToast('Anda telah meninggalkan room');
+            }
         }
         
         // Leave voice chat
         leaveVoiceChat();
         
         // Reset states
-        currentPlayer.roomCode = '';
-        currentPlayer.isCreator = false;
-        roomState = { players: {} };
+        roomState = {
+            code: '',
+            players: {},
+            gameStarted: false,
+            currentQuestion: 0,
+            status: 'waiting',
+            answers: {}
+        };
+        
+        gameState.playersAnswered.clear();
+        gameState.hasAnswered = false;
+        gameState.allPlayersAnswered = false;
         uiState.isVoiceChatEnabled = false;
         
         showScreen('lobby');
@@ -1559,19 +1663,28 @@ async function leaveWaitingRoom() {
 
 // Leave room (general)
 async function leaveRoom() {
-    if (!currentPlayer.roomCode) return;
+    if (!roomState.code) return;
     
     try {
-        const roomRef = window.firebaseConfig.database.ref('rooms/' + currentPlayer.roomCode);
+        const roomRef = window.firebaseConfig.database.ref('rooms/' + roomState.code);
+        const players = roomState.players || {};
         
-        if (currentPlayer.isCreator) {
-            await roomRef.remove();
-        } else {
-            await roomRef.child('players/' + currentPlayer.id).remove();
+        // Find current player in room
+        const currentPlayerId = currentUser.id || Object.keys(players).find(
+            id => players[id].username === currentUser.username
+        );
+        
+        if (currentPlayerId) {
+            const isCreator = players[currentPlayerId]?.isCreator;
+            
+            if (isCreator) {
+                await roomRef.remove();
+            } else {
+                await roomRef.child('players/' + currentPlayerId).remove();
+            }
         }
         
-        currentPlayer.roomCode = '';
-        currentPlayer.isCreator = false;
+        roomState.code = '';
         
     } catch (error) {
         console.error('Error leaving room:', error);
@@ -1591,7 +1704,7 @@ async function joinVoiceChat(roomCode) {
         }
         
         const channelName = `voice_${roomCode}`;
-        const uid = currentPlayer.id;
+        const uid = currentUser.id || 'guest_' + Date.now();
         
         const joined = await window.voiceChatManager.joinChannel(channelName, uid);
         
@@ -1625,7 +1738,7 @@ async function leaveVoiceChat() {
 async function toggleVoiceChat() {
     try {
         if (!window.voiceChatManager || !window.voiceChatManager.isJoined) {
-            await joinVoiceChat(currentPlayer.roomCode);
+            await joinVoiceChat(roomState.code);
             return;
         }
         
@@ -1646,7 +1759,7 @@ async function toggleVoiceChat() {
 }
 
 // ===============================
-// GAME FUNCTIONS
+// GAME FUNCTIONS - FIXED BUGS
 // ===============================
 
 // Load questions for category
@@ -1692,14 +1805,19 @@ function loadQuestion(index) {
     const question = gameState.roomQuestions[index];
     gameState.currentQuestionIndex = index;
     gameState.hasAnswered = false;
+    gameState.allPlayersAnswered = false;
     gameState.timer = window.firebaseConfig.GAME_CONFIG.QUESTION_TIME;
+    gameState.playersAnswered.clear();
+    
+    // Reset auto next question flag
+    uiState.autoNextQuestion = false;
     
     // Update UI
     domElements.game.questionText.textContent = question.text;
     domElements.game.questionCounter.textContent = `${index + 1}/${gameState.roomQuestions.length}`;
     
     // Update category
-    const category = gameState.categories.find(cat => cat.id === currentPlayer.selectedCategory);
+    const category = gameState.categories.find(cat => cat.id === roomState.category);
     if (category) {
         domElements.game.gameCategory.textContent = category.name;
         document.querySelector('#gameScreen .logo-icon i').className = `fas ${category.icon}`;
@@ -1715,22 +1833,27 @@ function loadQuestion(index) {
         optionElement.className = 'btn-secondary';
         optionElement.style.marginBottom = '10px';
         optionElement.textContent = option;
-        optionElement.onclick = () => submitAnswer(option, question.correctAnswer);
+        optionElement.onclick = () => submitAnswer(option, question.correctAnswer, index);
         domElements.game.optionsContainer.appendChild(optionElement);
     });
+    
+    // Reset timer display
+    if (domElements.game.gameTimer) {
+        domElements.game.gameTimer.textContent = gameState.timer;
+        domElements.game.gameTimer.style.background = 'var(--gradient-primary)';
+    }
     
     // Start timer
     startTimer();
     updateGameScoreboard();
+    
+    // Update room current question
+    updateRoomQuestion(index);
 }
 
 // Start timer
 function startTimer() {
     clearInterval(gameState.timerInterval);
-    
-    if (domElements.game.gameTimer) {
-        domElements.game.gameTimer.textContent = gameState.timer;
-    }
     
     gameState.timerInterval = setInterval(() => {
         gameState.timer--;
@@ -1741,31 +1864,29 @@ function startTimer() {
             // Change color when time is running out
             if (gameState.timer <= 5) {
                 domElements.game.gameTimer.style.background = 'var(--gradient-secondary)';
-            } else {
-                domElements.game.gameTimer.style.background = 'var(--gradient-primary)';
             }
         }
         
         if (gameState.timer <= 0) {
             clearInterval(gameState.timerInterval);
-            if (!gameState.hasAnswered) {
-                submitAnswer(null, null); // Time's up
-            }
             
-            // Move to next question after delay
-            setTimeout(() => {
-                nextQuestion();
-            }, 2000);
+            // Auto-advance to next question if not all players answered
+            if (!uiState.autoNextQuestion) {
+                uiState.autoNextQuestion = true;
+                setTimeout(() => {
+                    nextQuestion();
+                }, 2000);
+            }
         }
     }, 1000);
 }
 
 // Submit answer
-async function submitAnswer(selectedAnswer, correctAnswer) {
-    if (gameState.hasAnswered) return;
+async function submitAnswer(selectedAnswer, correctAnswer, questionIndex) {
+    if (gameState.hasAnswered || !roomState.code) return;
     
     gameState.hasAnswered = true;
-    clearInterval(gameState.timerInterval);
+    gameState.playersAnswered.add(currentUser.id || currentUser.username);
     
     // Update player score
     let points = 0;
@@ -1782,14 +1903,29 @@ async function submitAnswer(selectedAnswer, correctAnswer) {
         showToast('Salah! Jawaban benar: ' + correctAnswer);
     }
     
-    currentPlayer.score += points;
-    
-    // Update score in room
+    // Update answer in room state
     try {
-        const roomRef = window.firebaseConfig.database.ref('rooms/' + currentPlayer.roomCode);
-        await roomRef.child('players/' + currentPlayer.id + '/score').set(currentPlayer.score);
+        const roomRef = window.firebaseConfig.database.ref('rooms/' + roomState.code);
+        const playerId = currentUser.id || Object.keys(roomState.players || {}).find(
+            id => roomState.players[id].username === currentUser.username
+        );
+        
+        if (playerId) {
+            // Update player score
+            await roomRef.child(`players/${playerId}/score`).transaction((currentScore) => {
+                return (currentScore || 0) + points;
+            });
+            
+            // Record answer
+            await roomRef.child(`currentAnswers/${playerId}`).set({
+                answer: selectedAnswer,
+                isCorrect: selectedAnswer === correctAnswer,
+                points: points,
+                answeredAt: firebase.database.ServerValue.TIMESTAMP
+            });
+        }
     } catch (error) {
-        console.error('Error updating score:', error);
+        console.error('Error updating answer:', error);
     }
     
     // Highlight correct/incorrect answers
@@ -1809,6 +1945,65 @@ async function submitAnswer(selectedAnswer, correctAnswer) {
     });
     
     updateGameScoreboard();
+    
+    // Check if all players have answered
+    checkAllPlayersAnswered();
+}
+
+// Check if all players have answered
+async function checkAllPlayersAnswered() {
+    if (!roomState.code || !roomState.players) return;
+    
+    try {
+        const roomRef = window.firebaseConfig.database.ref('rooms/' + roomState.code);
+        const snapshot = await roomRef.child('currentAnswers').once('value');
+        
+        if (snapshot.exists()) {
+            const currentAnswers = snapshot.val();
+            const players = roomState.players;
+            const playerIds = Object.keys(players);
+            
+            // Count how many players have answered
+            const answeredCount = Object.keys(currentAnswers || {}).length;
+            
+            // If all players have answered, auto-advance after delay
+            if (answeredCount >= playerIds.length && !gameState.allPlayersAnswered) {
+                gameState.allPlayersAnswered = true;
+                clearInterval(gameState.timerInterval);
+                
+                showToast('Semua pemain telah menjawab!');
+                
+                // Auto-advance to next question
+                setTimeout(() => {
+                    if (!uiState.autoNextQuestion) {
+                        uiState.autoNextQuestion = true;
+                        nextQuestion();
+                    }
+                }, 3000);
+            }
+        }
+    } catch (error) {
+        console.error('Error checking players answered:', error);
+    }
+}
+
+// Update room question
+async function updateRoomQuestion(questionIndex) {
+    if (!roomState.code) return;
+    
+    try {
+        const roomRef = window.firebaseConfig.database.ref('rooms/' + roomState.code);
+        
+        // Clear previous answers
+        await roomRef.child('currentAnswers').remove();
+        
+        // Update question index
+        await roomRef.update({
+            currentQuestion: questionIndex
+        });
+    } catch (error) {
+        console.error('Error updating room question:', error);
+    }
 }
 
 // Update game scoreboard
@@ -1823,11 +2018,15 @@ function updateGameScoreboard() {
     domElements.game.gamePlayersScore.innerHTML = '<h3 style="margin-bottom: 10px; color: var(--text);">Skor Pemain:</h3>';
     
     playersArray.forEach((player, index) => {
-        const isCurrent = player.id === currentPlayer.id;
+        const isCurrentUser = player.userId === currentUser.id || 
+                             player.username === currentUser.username;
         const playerElement = document.createElement('div');
         playerElement.className = 'leaderboard-item';
-        if (isCurrent) playerElement.classList.add('you');
+        if (isCurrentUser) playerElement.classList.add('you');
         if (index < 3) playerElement.classList.add('top-3');
+        
+        // Check if player has answered
+        const hasAnswered = gameState.playersAnswered.has(player.userId || player.username);
         
         playerElement.innerHTML = `
             <div class="rank">${index + 1}</div>
@@ -1836,7 +2035,8 @@ function updateGameScoreboard() {
                 <div class="player-details">
                     <div class="player-name">
                         ${player.name}
-                        ${isCurrent ? '<span class="player-you">Anda</span>' : ''}
+                        ${isCurrentUser ? '<span class="player-you">Anda</span>' : ''}
+                        ${hasAnswered ? ' ✓' : ''}
                     </div>
                     <div class="player-stats">
                         <span class="role-badge role-${player.role || 'anggota'}">${player.role || 'anggota'}</span>
@@ -1849,35 +2049,54 @@ function updateGameScoreboard() {
     });
 }
 
+// Update game state from room
+function updateGameState(roomData) {
+    // Update question if different
+    if (roomData.currentQuestion !== gameState.currentQuestionIndex && !gameState.hasAnswered) {
+        gameState.currentQuestionIndex = roomData.currentQuestion;
+        loadQuestion(roomData.currentQuestion);
+    }
+    
+    // Check answers from other players
+    if (roomData.currentAnswers) {
+        const currentAnswers = roomData.currentAnswers;
+        const players = roomData.players || {};
+        
+        // Update which players have answered
+        Object.keys(currentAnswers).forEach(playerId => {
+            const player = players[playerId];
+            if (player && (player.userId || player.username)) {
+                gameState.playersAnswered.add(player.userId || player.username);
+            }
+        });
+        
+        // Check if all players have answered
+        const playerIds = Object.keys(players);
+        if (Object.keys(currentAnswers).length >= playerIds.length && !gameState.allPlayersAnswered) {
+            gameState.allPlayersAnswered = true;
+            clearInterval(gameState.timerInterval);
+            
+            if (!uiState.autoNextQuestion) {
+                uiState.autoNextQuestion = true;
+                setTimeout(() => {
+                    nextQuestion();
+                }, 3000);
+            }
+        }
+    }
+    
+    updateGameScoreboard();
+}
+
 // Next question
 async function nextQuestion() {
     const nextIndex = gameState.currentQuestionIndex + 1;
     
     if (nextIndex < gameState.roomQuestions.length) {
-        // Update room current question
-        try {
-            const roomRef = window.firebaseConfig.database.ref('rooms/' + currentPlayer.roomCode);
-            await roomRef.update({
-                currentQuestion: nextIndex
-            });
-        } catch (error) {
-            console.error('Error updating question:', error);
-        }
-        
         loadQuestion(nextIndex);
     } else {
         endGame();
     }
-}
-
-// Update game state from room
-function updateGameState(roomData) {
-    if (roomData.currentQuestion !== gameState.currentQuestionIndex) {
-        gameState.currentQuestionIndex = roomData.currentQuestion;
-        loadQuestion(roomData.currentQuestion);
-    }
-    
-    updateGameScoreboard();
 }
 
 // End game
@@ -1890,30 +2109,34 @@ async function endGame() {
             .map(([id, data]) => ({ id, ...data }))
             .sort((a, b) => b.score - a.score);
         
-        // Update user scores in database
+        // Update user scores in database (if not guest)
         if (!currentUser.isGuest && currentUser.id) {
             const userRef = window.firebaseConfig.database.ref('users/' + currentUser.id);
-            const snapshot = await userRef.once('value');
+            const player = playersArray.find(p => p.userId === currentUser.id || p.username === currentUser.username);
             
-            if (snapshot.exists()) {
-                const userData = snapshot.val();
-                const newTotalScore = (userData.totalScore || 0) + currentPlayer.score;
-                const newGamesPlayed = (userData.gamesPlayed || 0) + 1;
+            if (player) {
+                const snapshot = await userRef.once('value');
                 
-                await userRef.update({
-                    totalScore: newTotalScore,
-                    gamesPlayed: newGamesPlayed
-                });
-                
-                currentUser.totalScore = newTotalScore;
-                currentUser.gamesPlayed = newGamesPlayed;
-                updateUserStats();
+                if (snapshot.exists()) {
+                    const userData = snapshot.val();
+                    const newTotalScore = (userData.totalScore || 0) + (player.score || 0);
+                    const newGamesPlayed = (userData.gamesPlayed || 0) + 1;
+                    
+                    await userRef.update({
+                        totalScore: newTotalScore,
+                        gamesPlayed: newGamesPlayed
+                    });
+                    
+                    currentUser.totalScore = newTotalScore;
+                    currentUser.gamesPlayed = newGamesPlayed;
+                    updateUserStats();
+                }
             }
         }
         
         // Show results
         showScreen('result');
-        domElements.result.resultRoomCode.textContent = currentPlayer.roomCode;
+        domElements.result.resultRoomCode.textContent = roomState.code;
         
         const winner = playersArray[0] || {};
         domElements.result.winnerName.textContent = winner.name || '-';
@@ -1922,10 +2145,11 @@ async function endGame() {
         domElements.result.finalResults.innerHTML = '<h3 style="margin-bottom: 15px; color: var(--text);">Hasil Akhir:</h3>';
         
         playersArray.forEach((player, index) => {
-            const isCurrent = player.id === currentPlayer.id;
+            const isCurrentUser = player.userId === currentUser.id || 
+                                 player.username === currentUser.username;
             const resultElement = document.createElement('div');
             resultElement.className = 'leaderboard-item';
-            if (isCurrent) resultElement.classList.add('you');
+            if (isCurrentUser) resultElement.classList.add('you');
             if (index < 3) resultElement.classList.add('top-3');
             
             resultElement.innerHTML = `
@@ -1935,7 +2159,7 @@ async function endGame() {
                     <div class="player-details">
                         <div class="player-name">
                             ${player.name}
-                            ${isCurrent ? '<span class="player-you">Anda</span>' : ''}
+                            ${isCurrentUser ? '<span class="player-you">Anda</span>' : ''}
                             ${index === 0 ? '<i class="fas fa-crown" style="color: var(--warning); margin-left: 5px;"></i>' : ''}
                         </div>
                         <div class="player-stats">
@@ -1949,18 +2173,28 @@ async function endGame() {
         });
         
         // Clean up room
-        const roomRef = window.firebaseConfig.database.ref('rooms/' + currentPlayer.roomCode);
+        const roomRef = window.firebaseConfig.database.ref('rooms/' + roomState.code);
         await roomRef.remove();
         
         // Leave voice chat
         leaveVoiceChat();
         
-        // Reset game state
-        currentPlayer.roomCode = '';
-        currentPlayer.isCreator = false;
-        currentPlayer.score = 0;
+        // Reset states
+        roomState = {
+            code: '',
+            players: {},
+            gameStarted: false,
+            currentQuestion: 0,
+            status: 'waiting',
+            answers: {}
+        };
+        
         gameState.gameStarted = false;
+        gameState.playersAnswered.clear();
+        gameState.hasAnswered = false;
+        gameState.allPlayersAnswered = false;
         uiState.isVoiceChatEnabled = false;
+        uiState.autoNextQuestion = false;
         
         showToast('Game selesai!');
         
@@ -2086,10 +2320,10 @@ async function loadAdminDashboard() {
             <h4 style="color: var(--text); margin-bottom: 15px;">Quick Actions</h4>
             <div style="display: grid; grid-template-columns: 1fr; gap: 10px;">
                 <button class="btn-primary" onclick="showScreen('categoryManagement'); hideAdminPanel();">
-                    <i class="fas fa-layer-group"></i> Kelola Kategori
+                    <i class="fas fa-layer-group"></i> Kelola Kategori (Admin Only)
                 </button>
                 <button class="btn-primary" onclick="showScreen('questionManagement'); hideAdminPanel();">
-                    <i class="fas fa-question-circle"></i> Kelola Soal
+                    <i class="fas fa-question-circle"></i> Kelola Soal (Admin Only)
                 </button>
                 <button class="btn-primary" onclick="addSampleQuestions()">
                     <i class="fas fa-plus-circle"></i> Tambah Soal Contoh
@@ -2276,6 +2510,11 @@ function showScreen(screenName) {
                 domElements.lobby.roomCreateSection.classList.add('hidden');
                 domElements.lobby.roomJoinSection.classList.add('hidden');
                 uiState.activeRoomType = null;
+                
+                // Auto-fill player name
+                if (domElements.lobby.playerName && !domElements.lobby.playerName.value) {
+                    domElements.lobby.playerName.value = currentUser.username;
+                }
                 break;
             case 'categoryManagement':
                 updateCategoryList();
@@ -2340,8 +2579,39 @@ function toggleSound() {
 }
 
 // ===============================
+// DASHBOARD IMPROVEMENTS
+// ===============================
+
+// Update dashboard sections based on role
+function updateDashboardSections() {
+    // Hide category management for non-admin users
+    const categorySection = document.querySelector('.dashboard-section:nth-child(3)');
+    if (categorySection) {
+        if (currentUser.role !== 'admin' && currentUser.role !== 'developer') {
+            categorySection.style.display = 'none';
+        } else {
+            categorySection.style.display = 'flex';
+        }
+    }
+    
+    // Hide admin panel for non-admin users
+    const adminSection = document.querySelector('.dashboard-section:nth-child(4)');
+    if (adminSection) {
+        if (currentUser.role !== 'admin' && currentUser.role !== 'developer') {
+            adminSection.style.display = 'none';
+        } else {
+            adminSection.style.display = 'flex';
+        }
+    }
+}
+
+// ===============================
 // INITIALIZATION
 // ===============================
 
 // Initialize when page loads
-document.addEventListener('DOMContentLoaded', initGame);
+document.addEventListener('DOMContentLoaded', () => {
+    initGame().then(() => {
+        updateDashboardSections();
+    });
+});

@@ -492,6 +492,19 @@ body {
     font-weight: 600;
     color: var(--text);
 }
+/* Role-based visibility */
+.hidden-for-non-admin {
+    display: none !important;
+}
+
+.visible-for-admin {
+    display: flex !important;
+}
+
+/* Untuk dashboard sections */
+.dashboard-section.hidden {
+    display: none !important;
+}
 
 /* Login/Register Screen */
 .auth-tabs {

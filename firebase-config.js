@@ -39,6 +39,37 @@ const DEFAULT_CATEGORIES = [
     { id: 'hiburan', name: 'Hiburan', icon: 'fa-film', questionCount: 0 },
     { id: 'teknologi', name: 'Teknologi', icon: 'fa-laptop-code', questionCount: 0 }
 ];
+// Auto-clean old rooms
+function setupRoomAutoCleanup() {
+    setInterval(async () => {
+        try {
+            const roomsRef = database.ref('rooms');
+            const snapshot = await roomsRef.once('value');
+            
+            if (!snapshot.exists()) return;
+            
+            const rooms = snapshot.val();
+            const now = Date.now();
+            
+            for (const roomCode in rooms) {
+                const room = rooms[roomCode];
+                const roomAge = now - (room.createdAt || 0);
+                
+                // Delete rooms older than 24 hours
+                if (roomAge > GAME_CONFIG.MAX_ROOM_AGE) {
+                    await roomsRef.child(roomCode).remove();
+                    console.log(`Deleted old room: ${roomCode}`);
+                }
+            }
+        } catch (error) {
+            console.error('Error cleaning up rooms:', error);
+        }
+    }, 60 * 60 * 1000); // Run every hour
+}
+
+// Panggil di init
+setupRoomAutoCleanup(); 
+
 
 // Export for use in other files
 window.firebaseConfig = {
@@ -48,3 +79,4 @@ window.firebaseConfig = {
     ADMIN_CREDENTIALS,
     DEFAULT_CATEGORIES
 };
+
