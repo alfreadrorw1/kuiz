@@ -552,6 +552,53 @@ function updateUserUI() {
     updateCategoryAccessInfo();
 }
 
+// Tambahkan setelah fungsi updateUserUI()
+function updateAdminUI() {
+    const isAdmin = currentUser.role === 'admin' || currentUser.role === 'developer';
+    
+    // Update dashboard sections
+    const adminCategorySection = document.getElementById('adminCategorySection');
+    const adminQuestionSection = document.getElementById('adminQuestionSection');
+    const adminQuestionBtn = document.getElementById('adminQuestionBtn');
+    
+    if (adminCategorySection) {
+        adminCategorySection.style.display = isAdmin ? 'flex' : 'none';
+    }
+    
+    if (adminQuestionSection) {
+        adminQuestionSection.style.display = isAdmin ? 'flex' : 'none';
+    }
+    
+    if (adminQuestionBtn) {
+        adminQuestionBtn.style.display = isAdmin ? 'block' : 'none';
+    }
+}
+
+// Panggil fungsi updateAdminUI() di dalam updateUserUI():
+function updateUserUI() {
+    if (!currentUser.username) return;
+    
+    const initial = currentUser.username.charAt(0).toUpperCase();
+    domElements.user.avatar.textContent = initial;
+    domElements.user.initial.textContent = initial;
+    domElements.user.name.textContent = currentUser.username;
+    
+    // Update role display
+    const roleText = getRoleDisplay(currentUser.role);
+    domElements.user.role.innerHTML = roleText;
+    
+    // Update admin UI
+    updateAdminUI();
+    
+    // Auto-fill player name in lobby if empty
+    if (domElements.lobby.playerName && !domElements.lobby.playerName.value) {
+        domElements.lobby.playerName.value = currentUser.username;
+    }
+    
+    // Update category access info
+    updateCategoryAccessInfo();
+}
+
 // Get role display text with badge
 function getRoleDisplay(role) {
     const roleNames = {
