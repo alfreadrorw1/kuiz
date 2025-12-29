@@ -530,51 +530,41 @@ function logout() {
     showToast('Anda telah logout');
 }
 
-// Update user UI
-function updateUserUI() {
-    if (!currentUser.username) return;
-    
-    const initial = currentUser.username.charAt(0).toUpperCase();
-    domElements.user.avatar.textContent = initial;
-    domElements.user.initial.textContent = initial;
-    domElements.user.name.textContent = currentUser.username;
-    
-    // Update role display
-    const roleText = getRoleDisplay(currentUser.role);
-    domElements.user.role.innerHTML = roleText;
-    
-    // Auto-fill player name in lobby if empty
-    if (domElements.lobby.playerName && !domElements.lobby.playerName.value) {
-        domElements.lobby.playerName.value = currentUser.username;
-    }
-    
-    // Update category access info
-    updateCategoryAccessInfo();
-}
+// ===============================
+// FUNGSI UNTUK TAMPILAN ADMIN/DEVELOPER
+// ===============================
 
-// Tambahkan setelah fungsi updateUserUI()
+// Fungsi untuk menampilkan/menyembunyikan menu admin
 function updateAdminUI() {
     const isAdmin = currentUser.role === 'admin' || currentUser.role === 'developer';
+    
+    console.log('Update Admin UI - Role:', currentUser.role, 'isAdmin:', isAdmin);
     
     // Update dashboard sections
     const adminCategorySection = document.getElementById('adminCategorySection');
     const adminQuestionSection = document.getElementById('adminQuestionSection');
-    const adminQuestionBtn = document.getElementById('adminQuestionBtn');
+    const userMenuQuestionBtn = document.getElementById('userMenuQuestionBtn');
     
     if (adminCategorySection) {
         adminCategorySection.style.display = isAdmin ? 'flex' : 'none';
+        console.log('Category section display:', adminCategorySection.style.display);
     }
     
     if (adminQuestionSection) {
         adminQuestionSection.style.display = isAdmin ? 'flex' : 'none';
+        console.log('Question section display:', adminQuestionSection.style.display);
     }
     
-    if (adminQuestionBtn) {
-        adminQuestionBtn.style.display = isAdmin ? 'block' : 'none';
+    if (userMenuQuestionBtn) {
+        userMenuQuestionBtn.style.display = isAdmin ? 'block' : 'none';
+        console.log('User menu button display:', userMenuQuestionBtn.style.display);
     }
+    
+    // Update akses untuk manajemen kategori
+    updateCategoryAccessInfo();
 }
 
-// Panggil fungsi updateAdminUI() di dalam updateUserUI():
+// Update user UI
 function updateUserUI() {
     if (!currentUser.username) return;
     
@@ -719,6 +709,19 @@ function updateDeveloperStats() {
 // CATEGORY MANAGEMENT
 // ===============================
 
+// Update category access info
+function updateCategoryAccessInfo() {
+    if (!domElements.categoryManagement.categoryAccessInfo) return;
+    
+    if (currentUser.role === 'admin' || currentUser.role === 'developer') {
+        domElements.categoryManagement.categoryAccessInfo.innerHTML = 
+            '<i class="fas fa-edit"></i> Anda dapat mengedit dan menghapus kategori';
+    } else {
+        domElements.categoryManagement.categoryAccessInfo.innerHTML = 
+            '<i class="fas fa-eye"></i> Hanya admin yang dapat mengedit kategori';
+    }
+}
+
 // Load categories
 async function loadCategories() {
     try {
@@ -814,19 +817,6 @@ function updateCategoryList() {
         
         domElements.categoryManagement.categoriesList.appendChild(categoryItem);
     });
-}
-
-// Update category access info
-function updateCategoryAccessInfo() {
-    if (!domElements.categoryManagement.categoryAccessInfo) return;
-    
-    if (currentUser.role === 'admin' || currentUser.role === 'developer') {
-        domElements.categoryManagement.categoryAccessInfo.innerHTML = 
-            '<i class="fas fa-edit"></i> Anda dapat mengedit dan menghapus kategori';
-    } else {
-        domElements.categoryManagement.categoryAccessInfo.innerHTML = 
-            '<i class="fas fa-eye"></i> Hanya admin yang dapat mengedit kategori';
-    }
 }
 
 // Add new category
@@ -2626,39 +2616,10 @@ function toggleSound() {
 }
 
 // ===============================
-// DASHBOARD IMPROVEMENTS
-// ===============================
-
-// Update dashboard sections based on role
-function updateDashboardSections() {
-    // Hide category management for non-admin users
-    const categorySection = document.querySelector('.dashboard-section:nth-child(3)');
-    if (categorySection) {
-        if (currentUser.role !== 'admin' && currentUser.role !== 'developer') {
-            categorySection.style.display = 'none';
-        } else {
-            categorySection.style.display = 'flex';
-        }
-    }
-    
-    // Hide admin panel for non-admin users
-    const adminSection = document.querySelector('.dashboard-section:nth-child(4)');
-    if (adminSection) {
-        if (currentUser.role !== 'admin' && currentUser.role !== 'developer') {
-            adminSection.style.display = 'none';
-        } else {
-            adminSection.style.display = 'flex';
-        }
-    }
-}
-
-// ===============================
 // INITIALIZATION
 // ===============================
 
 // Initialize when page loads
 document.addEventListener('DOMContentLoaded', () => {
-    initGame().then(() => {
-        updateDashboardSections();
-    });
+    initGame();
 });
